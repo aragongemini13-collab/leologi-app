@@ -1,0 +1,48 @@
+name: Pabrik Video Reels Leologi (Harian)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  buat-video:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil kode & maskot
+        uses: actions/checkout@v4
+
+      - name: Pasang Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pasang mesin video FFmpeg & Font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          pip install requests edge-tts pillow
+
+      - name: Jalankan Robot Pembuat Video
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          CLOUDINARY_UPLOAD_PRESET: ${{ secrets.CLOUDINARY_UPLOAD_PRESET }}
+        run: python scripts/buat_video.py
+
+      - name: Simpan Riwayat Topik ke GitHub (Anti-Duplikat)
+        run: |
+          git config user.name "Leologi Bot"
+          git config user.email "bot@leologi.id"
+          git add riwayat_topik.json
+          git diff --staged --quiet || git commit -m "Log video harian otomatis"
+          git push
+
+      - name: Simpan Hasil Video agar Bisa Diunduh
+        uses: actions/upload-artifact@v4
+        with:
+          name: leologi-reel-video
+          path: leologi_reel.mp4
