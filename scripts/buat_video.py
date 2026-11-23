@@ -31,7 +31,11 @@ PILAR_HARIAN = {
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+            except json.JSONDecodeError:
+                return []
     return []
 
 
@@ -60,21 +64,20 @@ def fetch_viral_trends():
                     if item.text:
                         headlines.append(item.text.strip())
         except Exception as e:
-            print(f"Lewati feed {feed_url}: {e}")
+            print(f"Lewati feed {feed_url}: {e}", flush=True)
 
-    # Hapus duplikat & ambil maksimal 20 tren teratas
     unique = list(dict.fromkeys(headlines))[:20]
     return unique
 
 
 def generate_script(history, viral_trends):
-    now_wib = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
+    now_wib = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=7)
     hari_ke = now_wib.weekday()
     tag_harian, tema_harian = PILAR_HARIAN[hari_ke]
     tanggal_str = now_wib.strftime("%Y-%m-%d")
     bulan_str = now_wib.strftime("%B %Y")
 
-    recent_topics = [item["hook"] for item in history[-150:]]
+    recent_topics = [item["hook"] for item in history[-150:] if isinstance(item, dict) and "hook" in item]
     daftar_larangan = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else "- (belum ada)"
     daftar_viral = "\n".join(f"- {v}" for v in viral_trends) if viral_trends else "- (gunakan tren teknologi/edukasi terbaru bulan ini)"
 
@@ -174,7 +177,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             for j, (_, _, w_text) in enumerate(group):
                 clean = w_text.replace("{", "").replace("}", "")
                 if j == idx:
-                    # Efek memantul (pop-in) + warna cyan terang pada kata yang sedang diucapkan
                     parts.append(
                         r"{\c&H00FFF000&\fscx118\fscy118\t(0,120,\fscx106\fscy106)}"
                         + clean
@@ -193,17 +195,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def create_graphics(hook_text, tag_text, cta_text):
-    # 1. Background utama
     bg = Image.new("RGB", (1080, 1920), "#0F172A")
     draw = ImageDraw.Draw(bg)
 
-    # Grid tipis modern di background
     for gx in range(0, 1080, 90):
         draw.line([(gx, 0), (gx, 1920)], fill=(23, 35, 60), width=1)
     for gy in range(0, 1920, 90):
         draw.line([(0, gy), (1080, gy)], fill=(23, 35, 60), width=1)
 
-    # Pill kategori di atas
     font_tag = ImageFont.truetype(FONT_BOLD, 30)
     pill_text = f"LEOLOGI  •  {tag_text}"
     bbox = draw.textbbox((0, 0), pill_text, font=font_tag)
@@ -214,7 +213,6 @@ def create_graphics(hook_text, tag_text, cta_text):
     )
     draw.text((540 - tw // 2, 129), pill_text, font=font_tag, fill="#00F0FF")
 
-    # Judul Hook
     font_hook = ImageFont.truetype(FONT_BOLD, 56)
     wrapped = textwrap.wrap(hook_text.upper(), width=22)[:2]
     y_text = 215
@@ -224,27 +222,23 @@ def create_graphics(hook_text, tag_text, cta_text):
         draw.text((540 - lw // 2, y_text), line, font=font_hook, fill="#F8FAFC")
         y_text += 72
 
-    # Watermark bawah
     font_wm = ImageFont.truetype(FONT_BOLD, 32)
     wm = "@leologi.id"
     wb = draw.textbbox((0, 0), wm, font=font_wm)
     draw.text((540 - (wb[2] - wb[0]) // 2, 1575), wm, font=font_wm, fill="#FF7A00")
     bg.save("bg.png")
 
-    # 2. Bola cahaya neon bergerak (agar latar terasa hidup)
     glow = Image.new("RGBA", (600, 600), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
     gdraw.ellipse([100, 100, 500, 500], fill=(0, 240, 255, 55))
     glow = glow.filter(ImageFilter.GaussianBlur(70))
     glow.save("glow.png")
 
-    # 3. Progress bar cyan di bagian paling atas
     bar = Image.new("RGBA", (1080, 18), (0, 240, 255, 255))
     b_draw = ImageDraw.Draw(bar)
     b_draw.rectangle([1040, 0, 1080, 18], fill=(255, 122, 0, 255))
     bar.save("progress_bar.png")
 
-    # 4. Banner Pop-Up CTA Interaktif (muncul di 4.5 detik terakhir)
     cta_img = Image.new("RGBA", (860, 110), (0, 0, 0, 0))
     cdraw = ImageDraw.Draw(cta_img)
     cdraw.rounded_rectangle([4, 4, 856, 106], radius=50, fill=(255, 122, 0, 240), outline=(0, 240, 255, 255), width=4)
@@ -254,7 +248,6 @@ def create_graphics(hook_text, tag_text, cta_text):
     cdraw.text((430 - (cb[2] - cb[0]) // 2, 34), cta_clean, font=font_cta, fill="#0F172A")
     cta_img.save("cta.png")
 
-    # 5. Maskot Singa berbentuk lencana bercahaya
     imgs = []
     for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
         imgs.extend(glob.glob(f"assets/{ext}"))
@@ -284,20 +277,14 @@ def render_video(duration, out_file="leologi_reel.mp4"):
     cta_start = max(total - 4.5, 2.0)
 
     filter_complex = (
-        # Cahaya neon mengalir lembut di belakang
         "[0:v][3:v]overlay='240+180*sin(2*PI*t/6)':'420+120*cos(2*PI*t/5)'[bg_alive];"
-        # Maskot singa mengayun/miring halus (tilt) + melayang dinamis
         "[1:v]format=rgba,rotate='0.05*sin(2*PI*t/2.4)':c=none:ow=540:oh=540[mascot_anim];"
         "[bg_alive][mascot_anim]overlay='(W-w)/2':'400+18*sin(2*PI*t/2.0)'[v1];"
-        # Gelombang suara cyan mengikuti intonasi
         "[2:a]showwaves=s=760x120:mode=cline:colors=0x00F0FF:rate=30,"
         "colorkey=0x000000:0.1:0.2[waves];"
         "[v1][waves]overlay='(W-w)/2':965[v2];"
-        # Progress bar berjalan 0% -> 100% di atas
         f"[v2][4:v]overlay='-W+W*(t/{total:.2f})':0[v3];"
-        # Banner CTA meluncur naik (slide-up) di 4.5 detik terakhir
         f"[v3][5:v]overlay='(W-w)/2':'if(lt(t-{cta_start:.2f},0.4),1920-(1920-1425)*((t-{cta_start:.2f})/0.4),1425)':enable='gt(t,{cta_start:.2f})'[v4];"
-        # Subtitle animasi bouncy
         "[v4]subtitles=subs.ass[vout]"
     )
 
@@ -321,7 +308,7 @@ def render_video(duration, out_file="leologi_reel.mp4"):
 
 def upload_cloudinary(video_path):
     if not CLOUD_NAME or not UPLOAD_PRESET:
-        print("Cloudinary belum diatur, melewati upload.")
+        print("Cloudinary belum diatur, melewati upload.", flush=True)
         return None
     url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/video/upload"
     data = {
@@ -335,28 +322,45 @@ def upload_cloudinary(video_path):
 
 
 def main():
-    print("0. Membaca riwayat topik & menyedot tren viral Indonesia...")
+    print("0. Membaca riwayat topik & menyedot tren viral Indonesia...", flush=True)
     history = load_history()
     viral_trends = fetch_viral_trends()
-    print(f"Total riwayat: {len(history)} | Tren viral ditemukan: {len(viral_trends)}")
+    print(f"Total riwayat: {len(history)} | Tren viral ditemukan: {len(viral_trends)}", flush=True)
 
-    print("1. Meminta naskah edukasi viral anti-duplikat ke Gemini...")
+    print("1. Meminta naskah edukasi viral anti-duplikat ke Gemini...", flush=True)
     content = generate_script(history, viral_trends)
-    print("TANGGAL:", content["tanggal"])
-    print("PILAR:", content["tag"])
-    print("HOOK:", content["hook"])
-    print("CTA:", content.get("cta_text", "FOLLOW @LEOLOGI.ID!"))
-    print("SCRIPT:", content["script"])
-    print("CAPTION:\n", content["caption"])
+    print("TANGGAL:", content["tanggal"], flush=True)
+    print("PILAR:", content["tag"], flush=True)
+    print("HOOK:", content["hook"], flush=True)
+    print("CTA:", content.get("cta_text", "FOLLOW @LEOLOGI.ID!"), flush=True)
+    print("SCRIPT:", content["script"], flush=True)
+    print("CAPTION:\n", content["caption"], flush=True)
 
-    print("\n2. Membuat suara narator Indonesia (Edge-TTS)...")
+    print("\n2. Membuat suara narator Indonesia (Edge-TTS)...", flush=True)
     words = asyncio.run(generate_tts(content["script"]))
     duration = get_audio_duration("voice.mp3")
-    print(f"Durasi suara: {duration:.2f} detik")
+    print(f"Durasi suara: {duration:.2f} detik", flush=True)
 
-    print("\n3. Membuat aset visual dinamis & subtitle bouncy...")
+    print("\n3. Membuat aset visual dinamis & subtitle bouncy...", flush=True)
     build_ass_subtitles(words, content["script"], duration)
     create_graphics(content["hook"], content["tag"], content.get("cta_text", "TULIS PENDAPATMU DI KOMEN!"))
 
-    print("\n4. Merender video animasi MP4 (1080x1920)...")
-    render_video(duration)
+    print("\n4. Merender video animasi MP4 (1080x1920)...", flush=True)
+    render_video(duration, "leologi_reel.mp4")
+
+    print("\n5. Mengunggah video ke Cloudinary...", flush=True)
+    video_url = upload_cloudinary("leologi_reel.mp4")
+    print("SELESAI! Link Video Anda:", video_url, flush=True)
+
+    print("\n6. Menyimpan topik ke riwayat_topik.json...", flush=True)
+    save_history(history, {
+        "tanggal": content["tanggal"],
+        "tag": content["tag"],
+        "hook": content["hook"],
+        "video_url": video_url,
+        "caption": content["caption"],
+    })
+
+
+if __name__ == "__main__":
+    main()
