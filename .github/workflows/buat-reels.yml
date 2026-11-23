@@ -14,6 +14,9 @@ jobs:
     steps:
       - name: Ambil kode & maskot
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Pasang Python
         uses: actions/setup-python@v5
@@ -32,14 +35,6 @@ jobs:
           CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
           CLOUDINARY_UPLOAD_PRESET: ${{ secrets.CLOUDINARY_UPLOAD_PRESET }}
         run: python scripts/buat_video.py
-
-      - name: Simpan Riwayat Topik ke GitHub (Anti-Duplikat)
-        run: |
-          git config user.name "Leologi Bot"
-          git config user.email "bot@leologi.id"
-          git add riwayat_topik.json
-          git diff --staged --quiet || git commit -m "Log video harian otomatis"
-          git push
 
       - name: Simpan Hasil Video agar Bisa Diunduh
         uses: actions/upload-artifact@v4
