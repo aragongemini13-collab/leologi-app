@@ -45,6 +45,47 @@ def save_history(history, new_entry):
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 
+def _rank_model_name(name: str) -> tuple:
+    """Memberi prioritas dinamis ke model yang tersedia (versi lebih baru & flash/lite/pro diutamakan)."""
+    n = name.lower()
+    is_flash = 0 if "flash" in n else (1 if "pro" in n else 2)
+    is_not_exp = 0 if ("exp" not in n and "preview" not in n) else 1
+
+    version_score = 0
+    for ver in ("3.0", "2.5", "2.0", "1.5"):
+        if ver in n:
+            version_score = -int(float(ver) * 100)
+            break
+
+    return (is_not_exp, is_flash, version_score, n)
+
+
+def get_dynamic_models():
+    """Mengambil seluruh model aktif yang mendukung generateContent secara dinamis dari API."""
+    models = []
+    try:
+        resp = requests.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            headers={"x-goog-api-key": GEMINI_API_KEY},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        raw_models = resp.json().get("models", [])
+        for m in raw_models:
+            supported = m.get("supportedGenerationMethods", [])
+            full_name = m.get("name", "")
+            short_name = full_name.replace("models/", "")
+            if "generateContent" in supported and short_name:
+                if "gemini" in short_name.lower() and "image" not in short_name.lower() and "tts" not in short_name.lower():
+                    models.append(short_name)
+    except Exception as e:
+        print(f"Peringatan saat mengambil daftar model dinamis: {e}", flush=True)
+
+    unique_models = sorted(list(dict.fromkeys(models)), key=_rank_model_name)
+    print(f"Daftar model dinamis terdeteksi ({len(unique_models)}): {unique_models}", flush=True)
+    return unique_models
+
+
 def generate_script(history):
     now_wib = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=7)
     hari_ke = now_wib.weekday()
@@ -74,11 +115,10 @@ def generate_script(history):
         f"- caption: Caption singkat Instagram yang relevan dengan topik diakhiri 5 hashtag edukasi."
     )
 
-    candidate_models = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-    ]
+    candidate_models = get_dynamic_models()
+    if not candidate_models:
+        raise RuntimeError("Tidak ada model Gemini aktif yang ditemukan untuk API key ini.")
+
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -89,11 +129,8 @@ def generate_script(history):
     for model_name in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
         try:
+            print(f"Mencoba model dinamis: {model_name}...", flush=True)
             resp = requests.post(url, headers=headers, json=payload, timeout=60)
-            if resp.status_code == 404:
-                print(f"Model {model_name} mengembalikan 404, mencoba model berikutnya...", flush=True)
-                last_error = requests.HTTPError(f"404 for {model_name}", response=resp)
-                continue
             resp.raise_for_status()
 
             result = resp.json()
@@ -105,9 +142,10 @@ def generate_script(history):
             data["tag"] = tag_harian
             data["tanggal"] = tanggal_str
             data["hari_ke"] = hari_ke_berapa
-            print(f"Berhasil memakai model: {model_name}", flush=True)
+            print(f"Berhasil memakai model aktif: {model_name}", flush=True)
             return data
         except Exception as e:
+            print(f"Model {model_name} gagal ({e}), lanjut ke kandidat berikutnya...", flush=True)
             last_error = e
 
     raise last_error
@@ -334,7 +372,7 @@ def main():
     history = load_history()
     print(f"Total video tercatat: {len(history)} / 730", flush=True)
 
-    print("1. Meminta naskah edukasi harian anti-duplikat ke Gemini...", flush=True)
+    print("1. Meminta naskah edukasi harian anti-duplikat ke Gemini (model dinamis)...", flush=True)
     content = generate_script(history)
     print(f"HARI KE: {content['hari_ke']} | TANGGAL: {content['tanggal']}", flush=True)
     print("PILAR:", content["tag"], flush=True)
