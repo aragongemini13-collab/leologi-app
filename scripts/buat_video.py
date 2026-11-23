@@ -1,0 +1,362 @@
+import asyncio
+import datetime
+import glob
+import json
+import os
+import subprocess
+import textwrap
+import xml.etree.ElementTree as ET
+import requests
+import edge_tts
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
+UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+HISTORY_FILE = "riwayat_topik.json"
+
+PILAR_HARIAN = {
+    0: ("VIRAL TEKNOLOGI", "Tren teknologi, AI, atau gadget yang sedang viral dibahas bulan ini"),
+    1: ("TRIK DIGITAL", "Tips produktivitas, aplikasi viral, dan trik digital praktis sehari-hari"),
+    2: ("FAKTA SAINS", "Fakta sains mengejutkan, fenomena viral, atau logika unik di sekitar kita"),
+    3: ("CYBER SAFE", "Modus penipuan online terbaru, keamanan digital, dan privasi data"),
+    4: ("CARA KERJA", "Penjelasan singkat cara kerja teknologi sehari-hari (GPS, QRIS, Cloud, dll)"),
+    5: ("SKILL MASA DEPAN", "Tren dunia kerja, skill yang sedang dicari, dan cara belajar cepat"),
+    6: ("WAWASAN UNIK", "Cerita inspiratif, sejarah penemuan penting, atau wawasan global menarik"),
+}
+
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def save_history(history, new_entry):
+    history.append(new_entry)
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
+
+def fetch_viral_trends():
+    """Menyedot topik yang sedang trending/viral di Indonesia (100% gratis via RSS)."""
+    feeds = [
+        "https://trends.google.com/trending/rss?geo=ID",
+        "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=id&gl=ID&ceid=ID:id",
+        "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=id&gl=ID&ceid=ID:id",
+    ]
+    headlines = []
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    for feed_url in feeds:
+        try:
+            r = requests.get(feed_url, headers=headers, timeout=15)
+            if r.status_code == 200:
+                root = ET.fromstring(r.content)
+                for item in root.findall(".//item/title")[:10]:
+                    if item.text:
+                        headlines.append(item.text.strip())
+        except Exception as e:
+            print(f"Lewati feed {feed_url}: {e}")
+
+    # Hapus duplikat & ambil maksimal 20 tren teratas
+    unique = list(dict.fromkeys(headlines))[:20]
+    return unique
+
+
+def generate_script(history, viral_trends):
+    now_wib = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
+    hari_ke = now_wib.weekday()
+    tag_harian, tema_harian = PILAR_HARIAN[hari_ke]
+    tanggal_str = now_wib.strftime("%Y-%m-%d")
+    bulan_str = now_wib.strftime("%B %Y")
+
+    recent_topics = [item["hook"] for item in history[-150:]]
+    daftar_larangan = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else "- (belum ada)"
+    daftar_viral = "\n".join(f"- {v}" for v in viral_trends) if viral_trends else "- (gunakan tren teknologi/edukasi terbaru bulan ini)"
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    prompt = (
+        f"Kamu adalah kreator edukasi teknologi & wawasan untuk Instagram Reels @leologi.id.\n"
+        f"Tanggal hari ini: {tanggal_str} ({bulan_str}). Pilar hari ini: {tema_harian}.\n\n"
+        f"Berikut daftar berita/topik yang SEDANG VIRAL & TRENDING di Indonesia saat ini:\n"
+        f"{daftar_viral}\n\n"
+        f"Tugasmu:\n"
+        f"1. Jika ada topik di daftar viral di atas yang cocok dijadikan edukasi teknologi/sains/wawasan, pilih dan olah sudut pandang edukatifnya. "
+        f"Jika tidak ada yang cocok, buat topik edukasi segar sesuai pilar hari ini.\n"
+        f"2. DILARANG KERAS mengulang atau membuat topik yang mirip dengan riwayat di bawah ini:\n"
+        f"{daftar_larangan}\n\n"
+        f"Kembalikan JSON murni dengan 4 key:\n"
+        f"- hook: Judul pancingan super menarik maksimal 6 kata tanpa emoji.\n"
+        f"- script: Naskah narasi bahasa Indonesia santai, interaktif (ajak penonton mikir/bertanya di awal), "
+        f"durasi 25-35 detik (65-85 kata), tanpa emoji, tanpa tanda bintang, akhiri dengan pertanyaan singkat untuk kolom komentar.\n"
+        f"- cta_text: Teks singkat untuk pop-up di akhir video maksimal 5 kata (contoh: TULIS PENDAPATMU DI KOMEN!).\n"
+        f"- caption: Caption singkat Instagram yang memancing diskusi diakhiri 5 hashtag relevan."
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    data = json.loads(raw)
+    data["tag"] = tag_harian
+    data["tanggal"] = tanggal_str
+    return data
+
+
+async def generate_tts(text, out_audio="voice.mp3"):
+    try:
+        comm = edge_tts.Communicate(
+            text, voice="id-ID-ArdiNeural", rate="+6%", boundary="WordBoundary"
+        )
+    except TypeError:
+        comm = edge_tts.Communicate(text, voice="id-ID-ArdiNeural", rate="+6%")
+
+    words = []
+    with open(out_audio, "wb") as f:
+        async for chunk in comm.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                start = chunk["offset"] / 10_000_000
+                dur = chunk["duration"] / 10_000_000
+                words.append((start, start + dur, chunk["text"]))
+    return words
+
+
+def get_audio_duration(path):
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", path,
+    ]
+    return float(subprocess.check_output(cmd).decode().strip())
+
+
+def fmt_ass_time(sec):
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    s = int(sec % 60)
+    cs = int((sec - int(sec)) * 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def build_ass_subtitles(words, full_text, duration, out_ass="subs.ass"):
+    if not words:
+        tokens = full_text.split()
+        step = duration / max(len(tokens), 1)
+        words = [(i * step, (i + 1) * step, w) for i, w in enumerate(tokens)]
+
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,66,&H00FCFAF8,&H00007AFF,&H002A170F,&H80000000,-1,0,0,0,100,100,0,0,1,7,3,2,80,80,530,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+    group_size = 3
+    for i in range(0, len(words), group_size):
+        group = words[i : i + group_size]
+        for idx, (w_start, w_end, _) in enumerate(group):
+            parts = []
+            for j, (_, _, w_text) in enumerate(group):
+                clean = w_text.replace("{", "").replace("}", "")
+                if j == idx:
+                    # Efek memantul (pop-in) + warna cyan terang pada kata yang sedang diucapkan
+                    parts.append(
+                        r"{\c&H00FFF000&\fscx118\fscy118\t(0,120,\fscx106\fscy106)}"
+                        + clean
+                        + r"{\c&H00FCFAF8&\fscx100\fscy100}"
+                    )
+                else:
+                    parts.append(clean)
+            next_start = group[idx + 1][0] if idx + 1 < len(group) else w_end + 0.08
+            end_t = max(w_end, min(next_start, duration))
+            lines.append(
+                f"Dialogue: 0,{fmt_ass_time(w_start)},{fmt_ass_time(end_t)},Default,,0,0,0,,{' '.join(parts)}\n"
+            )
+
+    with open(out_ass, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def create_graphics(hook_text, tag_text, cta_text):
+    # 1. Background utama
+    bg = Image.new("RGB", (1080, 1920), "#0F172A")
+    draw = ImageDraw.Draw(bg)
+
+    # Grid tipis modern di background
+    for gx in range(0, 1080, 90):
+        draw.line([(gx, 0), (gx, 1920)], fill=(23, 35, 60), width=1)
+    for gy in range(0, 1920, 90):
+        draw.line([(0, gy), (1080, gy)], fill=(23, 35, 60), width=1)
+
+    # Pill kategori di atas
+    font_tag = ImageFont.truetype(FONT_BOLD, 30)
+    pill_text = f"LEOLOGI  •  {tag_text}"
+    bbox = draw.textbbox((0, 0), pill_text, font=font_tag)
+    tw = bbox[2] - bbox[0]
+    draw.rounded_rectangle(
+        [540 - tw // 2 - 34, 115, 540 + tw // 2 + 34, 177],
+        radius=31, fill="#0B1220", outline="#00F0FF", width=3,
+    )
+    draw.text((540 - tw // 2, 129), pill_text, font=font_tag, fill="#00F0FF")
+
+    # Judul Hook
+    font_hook = ImageFont.truetype(FONT_BOLD, 56)
+    wrapped = textwrap.wrap(hook_text.upper(), width=22)[:2]
+    y_text = 215
+    for line in wrapped:
+        lb = draw.textbbox((0, 0), line, font=font_hook)
+        lw = lb[2] - lb[0]
+        draw.text((540 - lw // 2, y_text), line, font=font_hook, fill="#F8FAFC")
+        y_text += 72
+
+    # Watermark bawah
+    font_wm = ImageFont.truetype(FONT_BOLD, 32)
+    wm = "@leologi.id"
+    wb = draw.textbbox((0, 0), wm, font=font_wm)
+    draw.text((540 - (wb[2] - wb[0]) // 2, 1575), wm, font=font_wm, fill="#FF7A00")
+    bg.save("bg.png")
+
+    # 2. Bola cahaya neon bergerak (agar latar terasa hidup)
+    glow = Image.new("RGBA", (600, 600), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    gdraw.ellipse([100, 100, 500, 500], fill=(0, 240, 255, 55))
+    glow = glow.filter(ImageFilter.GaussianBlur(70))
+    glow.save("glow.png")
+
+    # 3. Progress bar cyan di bagian paling atas
+    bar = Image.new("RGBA", (1080, 18), (0, 240, 255, 255))
+    b_draw = ImageDraw.Draw(bar)
+    b_draw.rectangle([1040, 0, 1080, 18], fill=(255, 122, 0, 255))
+    bar.save("progress_bar.png")
+
+    # 4. Banner Pop-Up CTA Interaktif (muncul di 4.5 detik terakhir)
+    cta_img = Image.new("RGBA", (860, 110), (0, 0, 0, 0))
+    cdraw = ImageDraw.Draw(cta_img)
+    cdraw.rounded_rectangle([4, 4, 856, 106], radius=50, fill=(255, 122, 0, 240), outline=(0, 240, 255, 255), width=4)
+    font_cta = ImageFont.truetype(FONT_BOLD, 34)
+    cta_clean = cta_text.upper()[:34]
+    cb = cdraw.textbbox((0, 0), cta_clean, font=font_cta)
+    cdraw.text((430 - (cb[2] - cb[0]) // 2, 34), cta_clean, font=font_cta, fill="#0F172A")
+    cta_img.save("cta.png")
+
+    # 5. Maskot Singa berbentuk lencana bercahaya
+    imgs = []
+    for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+        imgs.extend(glob.glob(f"assets/{ext}"))
+    if not imgs:
+        raise FileNotFoundError("Tidak ada gambar di folder assets/. Upload gambar singa dulu!")
+
+    size = 500
+    mascot = Image.open(imgs[0]).convert("RGBA")
+    min_side = min(mascot.size)
+    left = (mascot.width - min_side) // 2
+    top = (mascot.height - min_side) // 2
+    mascot = mascot.crop((left, top, left + min_side, top + min_side)).resize((size - 24, size - 24), Image.LANCZOS)
+
+    mask = Image.new("L", (size - 24, size - 24), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, size - 24, size - 24], fill=255)
+
+    badge = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    bdraw = ImageDraw.Draw(badge)
+    bdraw.ellipse([2, 2, size - 2, size - 2], outline="#FF7A00", width=8)
+    bdraw.ellipse([10, 10, size - 10, size - 10], outline="#00F0FF", width=6)
+    badge.paste(mascot, (12, 12), mask)
+    badge.save("mascot_badge.png")
+
+
+def render_video(duration, out_file="leologi_reel.mp4"):
+    total = duration + 0.6
+    cta_start = max(total - 4.5, 2.0)
+
+    filter_complex = (
+        # Cahaya neon mengalir lembut di belakang
+        "[0:v][3:v]overlay='240+180*sin(2*PI*t/6)':'420+120*cos(2*PI*t/5)'[bg_alive];"
+        # Maskot singa mengayun/miring halus (tilt) + melayang dinamis
+        "[1:v]format=rgba,rotate='0.05*sin(2*PI*t/2.4)':c=none:ow=540:oh=540[mascot_anim];"
+        "[bg_alive][mascot_anim]overlay='(W-w)/2':'400+18*sin(2*PI*t/2.0)'[v1];"
+        # Gelombang suara cyan mengikuti intonasi
+        "[2:a]showwaves=s=760x120:mode=cline:colors=0x00F0FF:rate=30,"
+        "colorkey=0x000000:0.1:0.2[waves];"
+        "[v1][waves]overlay='(W-w)/2':965[v2];"
+        # Progress bar berjalan 0% -> 100% di atas
+        f"[v2][4:v]overlay='-W+W*(t/{total:.2f})':0[v3];"
+        # Banner CTA meluncur naik (slide-up) di 4.5 detik terakhir
+        f"[v3][5:v]overlay='(W-w)/2':'if(lt(t-{cta_start:.2f},0.4),1920-(1920-1425)*((t-{cta_start:.2f})/0.4),1425)':enable='gt(t,{cta_start:.2f})'[v4];"
+        # Subtitle animasi bouncy
+        "[v4]subtitles=subs.ass[vout]"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loop", "1", "-i", "bg.png",
+        "-loop", "1", "-i", "mascot_badge.png",
+        "-i", "voice.mp3",
+        "-loop", "1", "-i", "glow.png",
+        "-loop", "1", "-i", "progress_bar.png",
+        "-loop", "1", "-i", "cta.png",
+        "-filter_complex", filter_complex,
+        "-map", "[vout]", "-map", "2:a",
+        "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-t", f"{total:.2f}", "-movflags", "+faststart",
+        out_file,
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def upload_cloudinary(video_path):
+    if not CLOUD_NAME or not UPLOAD_PRESET:
+        print("Cloudinary belum diatur, melewati upload.")
+        return None
+    url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/video/upload"
+    data = {
+        "upload_preset": UPLOAD_PRESET,
+        "folder": "leologi_reels",
+    }
+    with open(video_path, "rb") as f:
+        resp = requests.post(url, files={"file": f}, data=data, timeout=120)
+    resp.raise_for_status()
+    return resp.json()["secure_url"]
+
+
+def main():
+    print("0. Membaca riwayat topik & menyedot tren viral Indonesia...")
+    history = load_history()
+    viral_trends = fetch_viral_trends()
+    print(f"Total riwayat: {len(history)} | Tren viral ditemukan: {len(viral_trends)}")
+
+    print("1. Meminta naskah edukasi viral anti-duplikat ke Gemini...")
+    content = generate_script(history, viral_trends)
+    print("TANGGAL:", content["tanggal"])
+    print("PILAR:", content["tag"])
+    print("HOOK:", content["hook"])
+    print("CTA:", content.get("cta_text", "FOLLOW @LEOLOGI.ID!"))
+    print("SCRIPT:", content["script"])
+    print("CAPTION:\n", content["caption"])
+
+    print("\n2. Membuat suara narator Indonesia (Edge-TTS)...")
+    words = asyncio.run(generate_tts(content["script"]))
+    duration = get_audio_duration("voice.mp3")
+    print(f"Durasi suara: {duration:.2f} detik")
+
+    print("\n3. Membuat aset visual dinamis & subtitle bouncy...")
+    build_ass_subtitles(words, content["script"], duration)
+    create_graphics(content["hook"], content["tag"], content.get("cta_text", "TULIS PENDAPATMU DI KOMEN!"))
+
+    print("\n4. Merender video animasi MP4 (1080x1920)...")
+    render_video(duration)
