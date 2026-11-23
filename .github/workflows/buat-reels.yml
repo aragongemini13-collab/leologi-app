@@ -46,3 +46,15 @@ jobs:
         with:
           name: leologi-reel-video
           path: leologi_reel.mp4
+
+      - name: Simpan Riwayat Topik ke GitHub (Anti-Duplikat)
+        run: |
+          git config user.name "Leologi Bot"
+          git config user.email "bot@leologi.id"
+          touch riwayat_topik.json
+          git add riwayat_topik.json
+          if ! git diff --staged --quiet; then
+            git commit -m "Log video harian otomatis"
+            git pull --rebase origin main
+            git push
+          fi
