@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import textwrap
-import xml.etree.ElementTree as ET
 import requests
 import edge_tts
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -13,18 +12,19 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "")
 UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "")
+GDRIVE_WEBHOOK_URL = os.environ.get("GDRIVE_WEBHOOK_URL", "")
 
 FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 HISTORY_FILE = "riwayat_topik.json"
 
 PILAR_HARIAN = {
-    0: ("VIRAL TEKNOLOGI", "Tren teknologi, AI, atau gadget yang sedang viral dibahas bulan ini"),
-    1: ("TRIK DIGITAL", "Tips produktivitas, aplikasi viral, dan trik digital praktis sehari-hari"),
-    2: ("FAKTA SAINS", "Fakta sains mengejutkan, fenomena viral, atau logika unik di sekitar kita"),
-    3: ("CYBER SAFE", "Modus penipuan online terbaru, keamanan digital, dan privasi data"),
-    4: ("CARA KERJA", "Penjelasan singkat cara kerja teknologi sehari-hari (GPS, QRIS, Cloud, dll)"),
-    5: ("SKILL MASA DEPAN", "Tren dunia kerja, skill yang sedang dicari, dan cara belajar cepat"),
-    6: ("WAWASAN UNIK", "Cerita inspiratif, sejarah penemuan penting, atau wawasan global menarik"),
+    0: ("SENIN TEKNOLOGI", "Teknologi modern, kecerdasan buatan, dan inovasi digital yang mudah dipahami"),
+    1: ("SELASA PRODUKTIF", "Produktivitas kerja, manajemen waktu, dan trik alat digital sehari-hari"),
+    2: ("RABU SAINS & LOGIKA", "Fakta sains menarik, cara berpikir kritis, atau fenomena alam di sekitar kita"),
+    3: ("KAMIS CYBER SAFE", "Keamanan digital, privasi data pribadi, dan kebiasaan aman di internet"),
+    4: ("JUMAT CARA KERJA", "Penjelasan singkat cara kerja hal sehari-hari seperti GPS, QRIS, Cloud, atau baterai"),
+    5: ("SABTU SKILL & KARIER", "Keterampilan modern, cara belajar efektif, dan wawasan dunia kerja"),
+    6: ("MINGGU WAWASAN", "Sejarah penemuan penting, pola pikir berkembang, atau fakta unik dunia"),
 }
 
 
@@ -45,58 +45,33 @@ def save_history(history, new_entry):
         json.dump(history, f, indent=2, ensure_ascii=False)
 
 
-def fetch_viral_trends():
-    """Menyedot topik yang sedang trending/viral di Indonesia (100% gratis via RSS)."""
-    feeds = [
-        "https://trends.google.com/trending/rss?geo=ID",
-        "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=id&gl=ID&ceid=ID:id",
-        "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=id&gl=ID&ceid=ID:id",
-    ]
-    headlines = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    for feed_url in feeds:
-        try:
-            r = requests.get(feed_url, headers=headers, timeout=15)
-            if r.status_code == 200:
-                root = ET.fromstring(r.content)
-                for item in root.findall(".//item/title")[:10]:
-                    if item.text:
-                        headlines.append(item.text.strip())
-        except Exception as e:
-            print(f"Lewati feed {feed_url}: {e}", flush=True)
-
-    unique = list(dict.fromkeys(headlines))[:20]
-    return unique
-
-
-def generate_script(history, viral_trends):
+def generate_script(history):
     now_wib = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=7)
     hari_ke = now_wib.weekday()
     tag_harian, tema_harian = PILAR_HARIAN[hari_ke]
     tanggal_str = now_wib.strftime("%Y-%m-%d")
-    bulan_str = now_wib.strftime("%B %Y")
+    hari_ke_berapa = len(history) + 1
 
-    recent_topics = [item["hook"] for item in history[-150:] if isinstance(item, dict) and "hook" in item]
+    recent_topics = [
+        item["hook"]
+        for item in history[-730:]
+        if isinstance(item, dict) and "hook" in item
+    ]
     daftar_larangan = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else "- (belum ada)"
-    daftar_viral = "\n".join(f"- {v}" for v in viral_trends) if viral_trends else "- (gunakan tren teknologi/edukasi terbaru bulan ini)"
 
     prompt = (
         f"Kamu adalah kreator edukasi teknologi & wawasan untuk Instagram Reels @leologi.id.\n"
-        f"Tanggal hari ini: {tanggal_str} ({bulan_str}). Pilar hari ini: {tema_harian}.\n\n"
-        f"Berikut daftar berita/topik yang SEDANG VIRAL & TRENDING di Indonesia saat ini:\n"
-        f"{daftar_viral}\n\n"
-        f"Tugasmu:\n"
-        f"1. Jika ada topik di daftar viral di atas yang cocok dijadikan edukasi teknologi/sains/wawasan, pilih dan olah sudut pandang edukatifnya. "
-        f"Jika tidak ada yang cocok, buat topik edukasi segar sesuai pilar hari ini.\n"
-        f"2. DILARANG KERAS mengulang atau membuat topik yang mirip dengan riwayat di bawah ini:\n"
+        f"Hari ke-{hari_ke_berapa} dari target 730 hari (2 tahun) konten harian. Tanggal: {tanggal_str}.\n"
+        f"Pilar edukasi hari ini: {tema_harian}.\n\n"
+        f"Pilih 1 topik edukasi yang jelas, akurat, dan bermanfaat untuk audiens umum.\n"
+        f"DILARANG KERAS mengulang atau membuat topik yang sama/mirip dengan daftar di bawah ini:\n"
         f"{daftar_larangan}\n\n"
         f"Kembalikan JSON murni dengan 4 key:\n"
-        f"- hook: Judul pancingan super menarik maksimal 6 kata tanpa emoji.\n"
-        f"- script: Naskah narasi bahasa Indonesia santai, interaktif (ajak penonton mikir/bertanya di awal), "
-        f"durasi 25-35 detik (65-85 kata), tanpa emoji, tanpa tanda bintang, akhiri dengan pertanyaan singkat untuk kolom komentar.\n"
-        f"- cta_text: Teks singkat untuk pop-up di akhir video maksimal 5 kata (contoh: TULIS PENDAPATMU DI KOMEN!).\n"
-        f"- caption: Caption singkat Instagram yang memancing diskusi diakhiri 5 hashtag relevan."
+        f"- hook: Judul singkat pemancing perhatian maksimal 6 kata tanpa emoji.\n"
+        f"- script: Naskah narasi bahasa Indonesia natural, mengalir, dan mudah dipahami untuk durasi 25-35 detik "
+        f"(sekitar 65-85 kata), tanpa emoji, tanpa tanda bintang, akhiri dengan kalimat ajakan follow @leologi.id.\n"
+        f"- cta_text: Teks singkat untuk pop-up di akhir video maksimal 5 kata (contoh: FOLLOW @LEOLOGI.ID TIAP HARI!).\n"
+        f"- caption: Caption singkat Instagram yang relevan dengan topik diakhiri 5 hashtag edukasi."
     )
 
     candidate_models = [
@@ -129,6 +104,7 @@ def generate_script(history, viral_trends):
             data = json.loads(raw)
             data["tag"] = tag_harian
             data["tanggal"] = tanggal_str
+            data["hari_ke"] = hari_ke_berapa
             print(f"Berhasil memakai model: {model_name}", flush=True)
             return data
         except Exception as e:
@@ -140,10 +116,10 @@ def generate_script(history, viral_trends):
 async def generate_tts(text, out_audio="voice.mp3"):
     try:
         comm = edge_tts.Communicate(
-            text, voice="id-ID-ArdiNeural", rate="+6%", boundary="WordBoundary"
+            text, voice="id-ID-ArdiNeural", rate="+5%", boundary="WordBoundary"
         )
     except TypeError:
-        comm = edge_tts.Communicate(text, voice="id-ID-ArdiNeural", rate="+6%")
+        comm = edge_tts.Communicate(text, voice="id-ID-ArdiNeural", rate="+5%")
 
     words = []
     with open(out_audio, "wb") as f:
@@ -344,15 +320,23 @@ def upload_cloudinary(video_path):
     return resp.json()["secure_url"]
 
 
-def main():
-    print("0. Membaca riwayat topik & menyedot tren viral Indonesia...", flush=True)
-    history = load_history()
-    viral_trends = fetch_viral_trends()
-    print(f"Total riwayat: {len(history)} | Tren viral ditemukan: {len(viral_trends)}", flush=True)
+def send_to_gdrive(payload):
+    if not GDRIVE_WEBHOOK_URL:
+        print("GDRIVE_WEBHOOK_URL belum diatur, melewati kirim ke Google Drive.", flush=True)
+        return None
+    resp = requests.post(GDRIVE_WEBHOOK_URL, json=payload, timeout=120)
+    resp.raise_for_status()
+    return resp.text
 
-    print("1. Meminta naskah edukasi viral anti-duplikat ke Gemini...", flush=True)
-    content = generate_script(history, viral_trends)
-    print("TANGGAL:", content["tanggal"], flush=True)
+
+def main():
+    print("0. Membaca riwayat topik 2 tahun (730 hari)...", flush=True)
+    history = load_history()
+    print(f"Total video tercatat: {len(history)} / 730", flush=True)
+
+    print("1. Meminta naskah edukasi harian anti-duplikat ke Gemini...", flush=True)
+    content = generate_script(history)
+    print(f"HARI KE: {content['hari_ke']} | TANGGAL: {content['tanggal']}", flush=True)
     print("PILAR:", content["tag"], flush=True)
     print("HOOK:", content["hook"], flush=True)
     print("CTA:", content.get("cta_text", "FOLLOW @LEOLOGI.ID!"), flush=True)
@@ -366,7 +350,7 @@ def main():
 
     print("\n3. Membuat aset visual dinamis & subtitle bouncy...", flush=True)
     build_ass_subtitles(words, content["script"], duration)
-    create_graphics(content["hook"], content["tag"], content.get("cta_text", "TULIS PENDAPATMU DI KOMEN!"))
+    create_graphics(content["hook"], content["tag"], content.get("cta_text", "FOLLOW @LEOLOGI.ID TIAP HARI!"))
 
     print("\n4. Merender video animasi MP4 (1080x1920)...", flush=True)
     render_video(duration, "leologi_reel.mp4")
@@ -375,8 +359,22 @@ def main():
     video_url = upload_cloudinary("leologi_reel.mp4")
     print("SELESAI! Link Video Anda:", video_url, flush=True)
 
+    print("\n5b. Mengirim video & naskah ke folder harian Google Drive...", flush=True)
+    drive_res = send_to_gdrive({
+        "hari_ke": content["hari_ke"],
+        "tanggal": content["tanggal"],
+        "tag": content["tag"],
+        "hook": content["hook"],
+        "script": content["script"],
+        "caption": content["caption"],
+        "video_url": video_url,
+    })
+    if drive_res is not None:
+        print("Tersimpan di Google Drive:", drive_res, flush=True)
+
     print("\n6. Menyimpan topik ke riwayat_topik.json...", flush=True)
     save_history(history, {
+        "hari_ke": content["hari_ke"],
         "tanggal": content["tanggal"],
         "tag": content["tag"],
         "hook": content["hook"],
