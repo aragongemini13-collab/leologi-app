@@ -352,10 +352,16 @@ def upload_cloudinary(video_path):
         "upload_preset": UPLOAD_PRESET,
         "folder": "leologi_reels",
     }
-    with open(video_path, "rb") as f:
-        resp = requests.post(url, files={"file": f}, data=data, timeout=120)
-    resp.raise_for_status()
-    return resp.json()["secure_url"]
+    try:
+        with open(video_path, "rb") as f:
+            resp = requests.post(url, files={"file": f}, data=data, timeout=120)
+        if not resp.ok:
+            print(f"Peringatan upload Cloudinary ({resp.status_code}): {resp.text}", flush=True)
+            return None
+        return resp.json().get("secure_url")
+    except Exception as e:
+        print(f"Peringatan koneksi Cloudinary: {e}", flush=True)
+        return None
 
 
 def send_to_gdrive(payload):
