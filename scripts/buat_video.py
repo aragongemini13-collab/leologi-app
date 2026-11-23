@@ -81,8 +81,6 @@ def generate_script(history, viral_trends):
     daftar_larangan = "\n".join(f"- {t}" for t in recent_topics) if recent_topics else "- (belum ada)"
     daftar_viral = "\n".join(f"- {v}" for v in viral_trends) if viral_trends else "- (gunakan tren teknologi/edukasi terbaru bulan ini)"
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     prompt = (
         f"Kamu adalah kreator edukasi teknologi & wawasan untuk Instagram Reels @leologi.id.\n"
         f"Tanggal hari ini: {tanggal_str} ({bulan_str}). Pilar hari ini: {tema_harian}.\n\n"
@@ -100,18 +98,43 @@ def generate_script(history, viral_trends):
         f"- cta_text: Teks singkat untuk pop-up di akhir video maksimal 5 kata (contoh: TULIS PENDAPATMU DI KOMEN!).\n"
         f"- caption: Caption singkat Instagram yang memancing diskusi diakhiri 5 hashtag relevan."
     )
+
+    candidate_models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ]
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"},
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-    raw = raw.replace("```json", "").replace("```", "").strip()
-    data = json.loads(raw)
-    data["tag"] = tag_harian
-    data["tanggal"] = tanggal_str
-    return data
+
+    last_error = None
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=60)
+            if resp.status_code == 404:
+                print(f"Model {model_name} mengembalikan 404, mencoba model berikutnya...", flush=True)
+                last_error = requests.HTTPError(f"404 for {model_name}", response=resp)
+                continue
+            resp.raise_for_status()
+
+            result = resp.json()
+            parts = result["candidates"][0]["content"]["parts"]
+            raw = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+
+            data = json.loads(raw)
+            data["tag"] = tag_harian
+            data["tanggal"] = tanggal_str
+            print(f"Berhasil memakai model: {model_name}", flush=True)
+            return data
+        except Exception as e:
+            last_error = e
+
+    raise last_error
 
 
 async def generate_tts(text, out_audio="voice.mp3"):
